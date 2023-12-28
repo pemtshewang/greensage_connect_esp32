@@ -35,10 +35,8 @@ To use this codebase:
 
 Contributions are welcome! Feel free to open issues, submit pull requests, or propose new features.
 
-## License
-
-[License information goes here, if applicable]
 
 ## Acknowledgments
 
-[Optional section for acknowledging contributors, libraries used, etc.]
+- Everyone
+
