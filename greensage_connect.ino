@@ -1,31 +1,57 @@
 #include <WiFi.h>
 #include <WebSocketsServer.h>
 #include <DHT.h>
+#include <PubSubClient.h>
+
 #define DHTPIN 4
+WiFiClient espClient;
+PubSubClient client(espClient);
+WebSocketsServer webSocket = WebSocketsServer(80);
 
 // class declaration
 // DHT temperature and humidity sensor
 DHT dht(DHTPIN, DHT22);
 
+// Broker config
+const char* mqtt_server = "broker.emqx.io";
+const int mqtt_port = 1883;
+//
+
 // Declarations
 const int lightPin = 2; //D2
 const int exFanPin = 13; //D13
-const int waterValvePin = 12;  
+const int waterValvePin = 4;  
 // Station mode credentials
 const char* ssid = "pem";
 const char* password = "pem44444";
 // AP credentials -> type your credentials for the AP WIFI
-const char* my_ssid = "mywifi";
+const char* my_ssid = "ESP32";
 const char* my_password = "password";
 // Declaration ends
 // keep track of the last reading time for the DHT22 sensor
 unsigned long lastReadingTime = 0; 
 
-// local connection setup with websocket on port 81
-WebSocketsServer webSocket = WebSocketsServer(81); // Create a WebSocket server on port 81
-/*
-Define your websocket event here and perform certain actions when specific messages are received
-*/
+void callback(char* topic, byte* payload, unsigned int length) {
+  if (String(topic) == "light") {
+    if (String((char *)payload) == "on") {
+      digitalWrite(lightPin, HIGH);
+    } else {
+      digitalWrite(lightPin, LOW);
+    }
+  } else if (String(topic) == "ventilationFan") {
+    if (String((char *)payload) == "on") {
+      digitalWrite(exFanPin, HIGH);
+    } else {
+      digitalWrite(exFanPin, LOW);
+    }
+  } else if (String(topic) == "waterValve") {
+    if (String((char *)payload) == "open") {
+      digitalWrite(waterValvePin, HIGH);
+    } else {
+      digitalWrite(waterValvePin, LOW);
+    }
+  }
+}
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   if (type == WStype_CONNECTED) {
@@ -61,7 +87,10 @@ void setup() {
   // Connect to WiFi in Station mode
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  
+  WiFi.softAP("ESP32-AP", "password");
+  Serial.println("\nSoftAP created");
+  Serial.print("SoftAP IP: ");
+  Serial.println(WiFi.softAPIP());
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
     Serial.println("Connecting to WiFi...");
@@ -78,6 +107,9 @@ void setup() {
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
   // Create a SoftAP
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  
   WiFi.softAP("ESP32-AP", "password");
   Serial.println("\nSoftAP created");
   Serial.print("SoftAP IP: ");
