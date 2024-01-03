@@ -2,150 +2,146 @@
 #include <WebSocketsServer.h>
 #include <DHT.h>
 #include <PubSubClient.h>
+#include <Wire.h>
+#include "RTClib.h"
 
 #define DHTPIN 4
+
+RTC_DS3231 rtc;
 WiFiClient espClient;
 PubSubClient client(espClient);
 WebSocketsServer webSocket = WebSocketsServer(80);
 
-// class declaration
-// DHT temperature and humidity sensor
 DHT dht(DHTPIN, DHT22);
 
-// Broker config
 const char* mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
-//
 
-// Declarations
-const int lightPin = 2; //D2
-const int exFanPin = 13; //D13
-const int waterValvePin = 4;  
-// Station mode credentials
+char days[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+const int lightPin = 2;         // D2
+const int exFanPin = 13;        // D13
+const int waterValvePin = 4;    // D4
+
 const char* ssid = "pem";
 const char* password = "pem44444";
-// AP credentials -> type your credentials for the AP WIFI
-const char* my_ssid = "ESP32";
-const char* my_password = "password";
-// Declaration ends
-// keep track of the last reading time for the DHT22 sensor
-unsigned long lastReadingTime = 0; 
+
+unsigned long lastReadingTime = 0;
+
+void handleDeviceControl(const String& topic, const String& message) {
+  if (topic == "light") {
+    digitalWrite(lightPin, (message == "on") ? HIGH : LOW);
+  } else if (topic == "ventilationFan") {
+    digitalWrite(exFanPin, (message == "on") ? HIGH : LOW);
+  } else if (topic == "waterValve") {
+    digitalWrite(waterValvePin, (message == "open") ? HIGH : LOW);
+  }
+}
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  if (String(topic) == "light") {
-    if (String((char *)payload) == "on") {
-      digitalWrite(lightPin, HIGH);
-    } else {
-      digitalWrite(lightPin, LOW);
-    }
-  } else if (String(topic) == "ventilationFan") {
-    if (String((char *)payload) == "on") {
-      digitalWrite(exFanPin, HIGH);
-    } else {
-      digitalWrite(exFanPin, LOW);
-    }
-  } else if (String(topic) == "waterValve") {
-    if (String((char *)payload) == "open") {
-      digitalWrite(waterValvePin, HIGH);
-    } else {
-      digitalWrite(waterValvePin, LOW);
-    }
+  String receivedTopic = String(topic);
+  String receivedPayload;
+  for (int i = 0; i < length; i++) {
+    receivedPayload += (char)payload[i];
   }
+  Serial.println("Received message on topic: " + receivedTopic + " - Payload: " + receivedPayload);
+  handleDeviceControl(receivedTopic, receivedPayload);
 }
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   if (type == WStype_CONNECTED) {
     Serial.println("Client connected");
   } else if (type == WStype_TEXT) {
-    if (length > 0) {
-      String message = (char *)payload;
-
-      if (message == "light:on") {
-        digitalWrite(lightPin, HIGH);
-      } else if (message == "light:off") {
-        digitalWrite(lightPin, LOW);
-      } else if (message == "ventilationFan:on") {
-        digitalWrite(exFanPin, HIGH);
-      } else if (message == "ventilationFan:off") {
-        digitalWrite(exFanPin, LOW);
-      } else if (message == "waterValve:open") {
-        digitalWrite(waterValvePin, HIGH);
-      } else if (message == "waterValve:close") {
-        digitalWrite(waterValvePin, LOW);
-      } else {
-        // Handle any other text messages here
-      }
+    Serial.println("Received message on websocket");
+    if (length > 0) { String message = (char *)payload;
+      Serial.println(message);
+      String device = message.substring(0, message.indexOf(':'));
+      String action = message.substring(message.indexOf(':') + 1);
+      String topic = device;
+      handleDeviceControl(topic, action);
     }
-  } else {
-    // Handle other WebSocket event types here
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  
-  // Connect to WiFi in Station mode
+  rtc.begin();
+  if (!rtc.begin()) {
+    Serial.println("Could not find RTC! Check circuit.");
+    while (1);
+  }
+  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  WiFi.softAP("ESP32-AP", "password");
-  Serial.println("\nSoftAP created");
-  Serial.print("SoftAP IP: ");
-  Serial.println(WiFi.softAPIP());
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
     Serial.println("Connecting to WiFi...");
   }
-
-  // Print ESP32's IP address in Station mode
   Serial.println("\nConnected to WiFi");
   Serial.print("Local IP: ");
   Serial.println(WiFi.localIP());
+
   pinMode(lightPin, OUTPUT);
   pinMode(exFanPin, OUTPUT);
   pinMode(waterValvePin, OUTPUT);
-  // Start WebSocket server
+
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
-  // Create a SoftAP
+
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
-  
-  WiFi.softAP("ESP32-AP", "password");
-  Serial.println("\nSoftAP created");
-  Serial.print("SoftAP IP: ");
-  Serial.println(WiFi.softAPIP());
-  // Start DHT sensor
+  while (!client.connected()) {
+    if (client.connect("ESP32Client", "", "")) {
+      Serial.println("Connected to MQTT broker");
+      client.subscribe("light");
+      client.subscribe("ventilationFan");
+      client.subscribe("waterValve");
+    } else {
+      Serial.print("Failed to connect, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+
   dht.begin();
-  delay(500); 
-  // print DHT22 on initialisation
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
-  webSocket.broadcastTXT("temperature:" + String(temperature));
-  webSocket.broadcastTXT("humidity:" + String(humidity));
-  Serial.println("Temperature: " + String(temperature) + " C");
-  Serial.println("Humidity: " + String(humidity) + " %");
+  delay(500);
 }
 
 void loop() {
+  DateTime now = rtc.now();
+  Serial.print("Time: ");
+  Serial.print(now.hour(), DEC);
+  Serial.print(":");
+  Serial.print(now.minute(), DEC);
+  Serial.print(":");
+  Serial.println(now.second(), DEC);
+  Serial.print("Date: ");
+  Serial.print(now.day(), DEC);
+  Serial.print(" ");
+  Serial.print(days[now.dayOfTheWeek()]);
+  Serial.print(" ");
+  Serial.print(now.month(), DEC);
+  Serial.print("-");
+  Serial.println(now.year(), DEC);
+
   webSocket.loop();
-  
+  client.loop();
+
   unsigned long currentTime = millis();
   if (currentTime - lastReadingTime >= 0.5 * 60 * 1000 && webSocket.connectedClients() > 0) {
-    // Time for a reading and client is connected
     float temperature = dht.readTemperature();
     float humidity = dht.readHumidity();
 
-    if (isnan(temperature) || isnan(humidity)) {
-      Serial.println("Failed to read from DHT sensor!");
-    } else {
-      // Send readings to all connected clients
-      Serial.println("Temperature and humidity readings sent to clients");
-      // send temperature on temperature:value
+    if (!isnan(temperature) && !isnan(humidity)) {
       webSocket.broadcastTXT("temperature:" + String(temperature));
       webSocket.broadcastTXT("humidity:" + String(humidity));
       Serial.println("Temperature and humidity readings sent to clients");
+    } else {
+      Serial.println("Failed to read from DHT sensor!");
     }
 
-    lastReadingTime = currentTime;  // Update last reading time
+    lastReadingTime = currentTime;
   }
+  delay(1000);
 }
