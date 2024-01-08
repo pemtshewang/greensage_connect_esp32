@@ -23,7 +23,12 @@ const int mqtt_port = 1883;
 const int lightPin = 2;         // D2
 const int exFanPin = 13;        // D13
 const int soilMoisturePin = 34;
-const int waterValvePin = 4;    // D4
+const int waterValvePin = 5;    // D5
+const int rightVentilationRollerShutterPinUp = 12; // D12le
+const int rightVentilationRollerShutterPinDown = 14; // D14
+const int leftVentilationRollerShutterPinUp = 27; // D27 
+const int leftVentilationRollerShutterPinDown = 26; // D26
+
 // pin config
 
 const char* ssid = "pem";
@@ -34,6 +39,8 @@ const int wetValue = 200;
 bool isFanManuallyOn = false;
 bool isWaterValveManuallyOn = false;
 bool isWaterValveScheduled = false;
+bool rightRollerShutterManuallyOn = false;
+bool leftRollerShutterManuallyOn = false;
 
 // soil moisture conversion 
 int getMoisturePercentage(int sensorValue) {
@@ -73,9 +80,28 @@ void handleDeviceControl(const String& topic, const String& message) {
   } else if (topic == "waterValve") {
     isWaterValveManuallyOn = message == "open";
     digitalWrite(waterValvePin, (message == "open") ? HIGH : LOW);
-  }
+  } else if (topic == "rollerShutterLeft"){
+    if(message == "up"){
+      Serial.println("Left roller shutter up");
+      digitalWrite(leftVentilationRollerShutterPinUp, HIGH);
+      digitalWrite(leftVentilationRollerShutterPinDown, LOW);
+    }else{
+      Serial.println("Left roller shutter down");
+      digitalWrite(leftVentilationRollerShutterPinUp, LOW);
+      digitalWrite(leftVentilationRollerShutterPinDown, HIGH);
+    }
+  } else if (topic == "rollerShutterRight"){
+    if(message == "up"){
+      Serial.println("Right roller shutter up");
+      digitalWrite(rightVentilationRollerShutterPinUp, HIGH);
+      digitalWrite(rightVentilationRollerShutterPinDown, LOW);
+    }else{
+      Serial.println("Right roller shutter down");
+      digitalWrite(rightVentilationRollerShutterPinUp, LOW);
+      digitalWrite(rightVentilationRollerShutterPinDown, HIGH);
+    }
+  } 
 }
-
 void callback(char* topic, byte* payload, unsigned int length) {
   String receivedTopic = String(topic);
   String receivedPayload;
@@ -104,7 +130,7 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
           prefs.putFloat("temp", thresholdValue);
         }else if(thresholdType == "humidity"){
           prefs.putFloat("hum", thresholdValue);
-        }else if(thresholdType == "soilMoisture"){
+        }else if(thresholdType == "soil_moisture"){
           prefs.putFloat("soil", thresholdValue);
         }
         prefs.end();
@@ -164,30 +190,30 @@ void setup() {
 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
-  while (!client.connected()) {
-    if (client.connect("ESP32Client", "", "")) {
-      Serial.println("Connected to MQTT broker");
-      client.subscribe("light");
-      client.subscribe("ventilationFan");
-      client.subscribe("waterValve");
-    } else {
-      Serial.print("Failed to connect, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
-  }
+  // while (!client.connected()) {
+  //   if (client.connect("ESP32Client", "", "")) {
+  //     Serial.println("Connected to MQTT broker");
+  //     client.subscribe("light");
+  //     client.subscribe("ventilationFan");
+  //     client.subscribe("waterValve");
+  //   } else {
+  //     Serial.print("Failed to connect, rc=");
+  //     Serial.print(client.state());
+  //     Serial.println(" try again in 5 seconds");
+  //     delay(5000);
+  //   }
+  // }
   dht.begin();
-  float settedThreshold = prefs.getFloat("temp");
   prefs.end();
   delay(500);
 }
 
 void loop() {
-  client.loop();
+  // client.loop();
   webSocket.loop();
   prefs.begin("my-app", false);
   float tempThreshold = prefs.getFloat("temp");
+  float humThreshold = prefs.getFloat("hum");
   prefs.end();
 
   String startDate = getStartDate();
@@ -220,12 +246,32 @@ void loop() {
   if(temperature > tempThreshold && !isnan(temperature)){
     Serial.println("Temperature is greater than threshold");
     digitalWrite(exFanPin, HIGH);
+    digitalWrite(rightVentilationRollerShutterPinUp, HIGH);
+    digitalWrite(leftVentilationRollerShutterPinUp, HIGH);
+    digitalWrite(rightVentilationRollerShutterPinDown, LOW);
+    digitalWrite(leftVentilationRollerShutterPinDown, LOW);
+  }
+  if(humidity > humThreshold && !isnan(humidity)){
+    Serial.println("Humidity is greater than threshold");
+    digitalWrite(exFanPin, HIGH);
+    digitalWrite(rightVentilationRollerShutterPinUp, HIGH);
+    digitalWrite(leftVentilationRollerShutterPinUp, HIGH);
+    digitalWrite(rightVentilationRollerShutterPinDown, LOW);
+    digitalWrite(leftVentilationRollerShutterPinDown, LOW);
   }
   Serial.println("Temperature: " + String(temperature));
   
-  if(temperature < tempThreshold){
+  if(temperature < tempThreshold || humidity < humThreshold){
     if(!isFanManuallyOn){
       digitalWrite(exFanPin, LOW);
+    }
+    if(!leftRollerShutterManuallyOn){
+      digitalWrite(leftVentilationRollerShutterPinUp, LOW);
+      digitalWrite(leftVentilationRollerShutterPinDown, HIGH);
+    }
+    if(!rightRollerShutterManuallyOn){
+      digitalWrite(rightVentilationRollerShutterPinUp, LOW);
+      digitalWrite(rightVentilationRollerShutterPinDown, HIGH);
     }
   }
 
