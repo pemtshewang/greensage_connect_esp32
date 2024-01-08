@@ -5,7 +5,6 @@
 #include <Wire.h>
 #include "RTClib.h"
 #include <Preferences.h>
-#include <SPIFFS.h> 
 #define DHTPIN 4
 
 RTC_DS3231 rtc;
@@ -15,19 +14,26 @@ WebSocketsServer webSocket = WebSocketsServer(80);
 Preferences prefs;
 DHT dht(DHTPIN, DHT22);
 
+// mqtt config
 const char* mqtt_server = "broker.emqx.io";
 const int mqtt_port = 1883;
+// mqtt ends
 
+// pin config
 const int lightPin = 2;         // D2
 const int exFanPin = 13;        // D13
 const int soilMoisturePin = 34;
 const int waterValvePin = 4;    // D4
+// pin config
 
 const char* ssid = "pem";
 const char* password = "pem44444";
 
 const int dryValue = 850;
 const int wetValue = 200;
+bool isFanManuallyOn = false;
+bool isWaterValveManuallyOn = false;
+bool isWaterValveScheduled = false;
 
 // soil moisture conversion 
 int getMoisturePercentage(int sensorValue) {
@@ -41,26 +47,31 @@ void storeScheduledDates(String slotNumber, String startTime, String endTime) {
   prefs.putString("end", endTime);
   prefs.end();
 }
+
 String getStartDate(){
   prefs.begin("slot1", false);
   String startDate = prefs.getString("start");
   prefs.end();
   return startDate;
 }
+
 String getEndDate(){
   prefs.begin("slot1", false);
   String endDate = prefs.getString("end");
   prefs.end();
   return endDate;
 }
+
 unsigned long lastReadingTime = 0;
 
 void handleDeviceControl(const String& topic, const String& message) {
   if (topic == "light") {
     digitalWrite(lightPin, (message == "on") ? HIGH : LOW);
   } else if (topic == "ventilationFan") {
+    isFanManuallyOn = message == "on";
     digitalWrite(exFanPin, (message == "on") ? HIGH : LOW);
   } else if (topic == "waterValve") {
+    isWaterValveManuallyOn = message == "open";
     digitalWrite(waterValvePin, (message == "open") ? HIGH : LOW);
   }
 }
@@ -120,6 +131,7 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
     }
   }
 }
+
 void setup() {
   Serial.begin(115200);
   rtc.begin();
@@ -165,15 +177,6 @@ void setup() {
       delay(5000);
     }
   }
-   // Attempt to mount SPIFFS
-    if (!SPIFFS.begin(true)) {
-        Serial.println("SPIFFS mount failed. Formatting...");
-        SPIFFS.format();
-        if (!SPIFFS.begin(true)) {
-            Serial.println("SPIFFS mount failed even after formatting. Check connections or try a different SPIFFS size.");
-            return;
-        }
-    }
   dht.begin();
   float settedThreshold = prefs.getFloat("temp");
   prefs.end();
@@ -181,55 +184,55 @@ void setup() {
 }
 
 void loop() {
-  
+  client.loop();
+  webSocket.loop();
   prefs.begin("my-app", false);
   float tempThreshold = prefs.getFloat("temp");
   prefs.end();
 
   String startDate = getStartDate();
   String endDate = getEndDate();
+  Serial.println("Start date: " + startDate);
+  Serial.println("End date: " + endDate);
 
   DateTime now = rtc.now();
   String isoformat = now.timestamp(DateTime::TIMESTAMP_FULL);
+  Serial.println("Current time: " + isoformat);
   // check if startDate is not empyt and end date is not empty
   if(startDate != "" && endDate != ""){
-    Serial.println("Start Date: " + startDate);
-    Serial.println("End Date: " + endDate);
-    Serial.println("Current Date: " + isoformat);
     // check if the current time is between the start and end time
     if(isoformat >= startDate && isoformat <= endDate){
-      digitalWrite(lightPin, HIGH);
+      Serial.println("Water valve is open due to scheduled time");
       digitalWrite(waterValvePin, HIGH);
+      isWaterValveScheduled = true;
     }else{
-      digitalWrite(lightPin, LOW);
-      digitalWrite(waterValvePin, LOW);
+      if(!isWaterValveManuallyOn && !isFanManuallyOn && startDate >= isoformat && endDate >= isoformat && isWaterValveScheduled){
+          digitalWrite(waterValvePin, LOW);
+          isWaterValveScheduled = false;
+          Serial.println("Water valve is closed due to scheduled time");
+      }
     }
   }
   
-  webSocket.loop();
-  
-  client.loop();
-
   float temperature = dht.readTemperature();
   float humidity = dht.readHumidity();
   
-  if(temperature > tempThreshold){
-    digitalWrite(lightPin, HIGH);
+  if(temperature > tempThreshold && !isnan(temperature)){
+    Serial.println("Temperature is greater than threshold");
     digitalWrite(exFanPin, HIGH);
   }
+  Serial.println("Temperature: " + String(temperature));
   
   if(temperature < tempThreshold){
-    // if temperature is below threshold and the fan is on then turn off the light and fan 
-    if(digitalRead(exFanPin) == HIGH){
-      digitalWrite(lightPin, LOW);
+    if(!isFanManuallyOn){
       digitalWrite(exFanPin, LOW);
     }
   }
-  
+
   unsigned long currentTime = millis();
   if (currentTime - lastReadingTime >= 0.5 * 60 * 1000 && webSocket.connectedClients() > 0) {
+    // the readings are sent after 30secs from the current elapsed time
     int soilMoisture = getMoisturePercentage(analogRead(soilMoisturePin));
-    
     if (!isnan(temperature) && !isnan(humidity && !isnan(soilMoisture))) {
       webSocket.broadcastTXT("temperature:" + String(temperature));
       webSocket.broadcastTXT("humidity:" + String(humidity));
@@ -237,7 +240,6 @@ void loop() {
     } else {
       Serial.println("Failed to read from DHT sensor!");
     }
-
     lastReadingTime = currentTime;
   }
   delay(1000);
